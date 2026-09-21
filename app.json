@@ -1,14 +1,18 @@
 {
   "expo": {
-    "name": "ipad-note",
+    "name": "ノート|メモ",
     "slug": "ipad-note",
     "version": "1.0.0",
-    "orientation": "portrait",
+    "orientation": "default",
     "icon": "./assets/images/icon.png",
     "scheme": "ipadnote",
     "userInterfaceStyle": "automatic",
     "ios": {
-      "icon": "./assets/expo.icon"
+      "bundleIdentifier": "com.yukitake.ipadnote",
+      "supportsTablet": true,
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -17,7 +21,8 @@
         "backgroundImage": "./assets/images/android-icon-background.png",
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "package": "com.yukitake.ipadnote"
     },
     "web": {
       "output": "static",
@@ -25,6 +30,7 @@
     },
     "plugins": [
       "expo-router",
+      ["expo-image-picker", { "photosPermission": "ノートに写真を挿入するために写真へのアクセスを使用します", "microphonePermission": false }],
       [
         "expo-splash-screen",
         {
@@ -37,6 +43,12 @@
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "29de3712-7bbe-40f8-8d8b-796f0a546775"
+      }
     }
   }
 }

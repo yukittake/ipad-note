@@ -56,7 +56,7 @@ function useUser(id: string) {
     setUser(null)
   }
 
-  return {          // 戻り値の数が多くなる場合はjson形式をうまく活用してリーダブルに
+  return {          // 戻り値の数が多くなる場合はjson形式(入れ子構造など)をうまく活用してリーダブルに
     user,
     updateName,
     clearUser,
@@ -66,9 +66,17 @@ function useUser(id: string) {
 
 # ファイルごとのルール
 
+## 共通
+関数の引数や戻り値が4つ以上になった場合、jsonの特徴(入れ子構造など)をうまく使ってできる限り引数や戻り値の見た目上の数を減らし、
+リーダブルにすること。
+
 ## index.tsx
 index.tsxファイルが大きくなりすぎないように、要素ごとにコンポーネントに分解し、
 コンポーネントごとにファイルを作成してcomponentsディレクトリに入れること。
+
+## components/, hooks.ts, constants.ts, stores.ts
+「components/のファイルにreact hooksの実装を記述してはいけない。必ずhooks.tsで実装し、それをインポートする。」といったように
+これら4つのファイルは必ず役割を分担し、跨いではいけない。
 
 <!-- END: project-rules -->
 

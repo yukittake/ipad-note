@@ -1,0 +1,7 @@
+{
+  "name": "persistent-directory",
+  "version": "1.0.0",
+  "description": "Persist iOS document folder access for the note app",
+  "main": "index.ts",
+  "private": true
+}
