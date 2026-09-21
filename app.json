@@ -29,8 +29,22 @@
       "favicon": "./assets/images/favicon.png"
     },
     "plugins": [
+      [
+        "expo-build-properties",
+        {
+          "ios": {
+            "enableSceneSupport": true
+          }
+        }
+      ],
       "expo-router",
-      ["expo-image-picker", { "photosPermission": "ノートに写真を挿入するために写真へのアクセスを使用します", "microphonePermission": false }],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "ノートに写真を挿入するために写真へのアクセスを使用します",
+          "microphonePermission": false
+        }
+      ],
       [
         "expo-splash-screen",
         {
