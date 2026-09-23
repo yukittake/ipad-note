@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
-import type { Tool } from './hooks';
+import type { Tool } from './hooks/types';
 import { DEFAULT_INK_COLOR, DEFAULT_INK_WIDTH } from './constants';
 import { editorPreferencesStorage } from '@/infra/local/preferences';
 
