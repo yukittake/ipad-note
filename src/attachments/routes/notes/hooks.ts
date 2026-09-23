@@ -39,6 +39,7 @@ import {
 export type Tool = 'pen' | 'eraser' | 'select' | 'hand';
 export type Box = { x: number; y: number; width: number; height: number };
 export type Selection = { id: string; points: Point[]; bounds: Box };
+type StrokeClipboard = { strokes: Stroke[]; outline: Point[]; bounds: Box };
 
 function menuCoordinates({
   anchor,
@@ -302,6 +303,7 @@ export function useEditor(noteId: string) {
   const [selection, setSelection] = useState<Selection | null>(null);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [selectionDraft, setSelectionDraft] = useState<Point[] | null>(null);
+  const [clipboard, setClipboard] = useState<StrokeClipboard | null>(null);
   const gesture = useRef<{
     start: Point;
     mode: 'draw' | 'erase' | 'select' | 'move';
@@ -650,6 +652,42 @@ export function useEditor(noteId: string) {
     setSelectedIds([]);
     setSelection(null);
   };
+  const clearSelection = () => {
+    setSelectedIds([]);
+    setSelection(null);
+  };
+  const copySelection = () => {
+    if (!selection || !selectedIds.length) return;
+    const ids = new Set(selectedIds);
+    setClipboard({
+      strokes: strokesRef.current
+        .filter((stroke) => ids.has(stroke.id))
+        .map((stroke) => ({ ...stroke, points: stroke.points.map((point) => ({ ...point })) })),
+      outline: selection.points.map((point) => ({ ...point })),
+      bounds: { ...selection.bounds },
+    });
+  };
+  const cutSelection = () => {
+    copySelection();
+    removeSelection();
+  };
+  const pasteSelection = (point: Point) => {
+    if (!clipboard?.strokes.length || !page || loadedPageId !== page.id) return;
+    const dx = point.x - (clipboard.bounds.x + clipboard.bounds.width / 2);
+    const dy = point.y - (clipboard.bounds.y + clipboard.bounds.height / 2);
+    const pasted = clipboard.strokes.map((stroke) => ({
+      ...stroke,
+      id: newElementId(),
+      points: stroke.points.map((source) => ({ x: source.x + dx, y: source.y + dy })),
+    }));
+    commit([...strokesRef.current, ...pasted]);
+    setSelectedIds(pasted.map((stroke) => stroke.id));
+    setSelection({
+      id: newElementId(),
+      points: clipboard.outline.map((source) => ({ x: source.x + dx, y: source.y + dy })),
+      bounds: { ...clipboard.bounds, x: clipboard.bounds.x + dx, y: clipboard.bounds.y + dy },
+    });
+  };
   const undo = () => {
     if (!page || loadedPageId !== page.id) return;
     const history = historyFor(page.id);
@@ -752,7 +790,17 @@ export function useEditor(noteId: string) {
       width,
       setWidth,
     },
-    selection: { outline: selection, selectedIds, draft: selectionDraft, remove: removeSelection },
+    selection: {
+      outline: selection,
+      selectedIds,
+      draft: selectionDraft,
+      remove: removeSelection,
+      clear: clearSelection,
+      copy: copySelection,
+      cut: cutSelection,
+      paste: pasteSelection,
+      canPaste: !!clipboard?.strokes.length,
+    },
     content: { addText, addImage, updateItem, removeItem },
     history: {
       undo,
@@ -1105,6 +1153,9 @@ export type DrawingCanvasOptions = {
     outline: Selection | null;
     onItemTap: (id: string) => void;
     onBackgroundTap: () => void;
+    onClearRange: () => void;
+    onPaste: (point: Point) => void;
+    canPaste: boolean;
   };
   drawing: {
     tool: Tool;
@@ -1125,6 +1176,9 @@ export function useDrawingCanvas({
     outline: selection,
     onItemTap,
     onBackgroundTap,
+    onClearRange,
+    onPaste,
+    canPaste,
   },
   drawing: { tool, inputMode, begin, move, end, cancel },
   pages: { canGoPrevious, onChange: onPageChange },
@@ -1137,6 +1191,11 @@ export function useDrawingCanvas({
   const [imagePreview, setImagePreview] = useState<{ id: string; box: Box } | null>(null);
   const imageGesture = useRef<{ item: PageItem; side: ResizeSide | null } | null>(null);
   const [draggingSelection, setDraggingSelection] = useState(false);
+  const [pasteMenu, setPasteMenu] = useState<{
+    left: number;
+    top: number;
+    point: Point;
+  } | null>(null);
   const panStart = useRef({ x: 0, y: 0, scale: 1 });
   const pinchStart = useRef({ scale: 1, x: 0, y: 0, focalX: 0, focalY: 0 });
   const pinchedDuringPan = useRef(false);
@@ -1201,7 +1260,7 @@ export function useDrawingCanvas({
       ? `range:${selectedRange.id}:${selectedRange.bounds.x}:${selectedRange.bounds.y}`
       : null;
   const anchor = selectedItem ?? selectedRange?.bounds;
-  const menuWidth = selectedItem?.kind === 'text' ? 136 : selectedItem ? 72 : 136;
+  const menuWidth = selectedItem?.kind === 'text' ? 136 : selectedItem ? 72 : 224;
   const [menuPosition, setMenuPosition] = useState<{
     key: string;
     left: number;
@@ -1465,9 +1524,21 @@ export function useDrawingCanvas({
         ? Gesture.Simultaneous(drawGesture, handPan, twoFingerPan, pinch)
         : Gesture.Simultaneous(drawGesture, twoFingerPan, pinch);
   const fingerImageTapEnabled = inputMode === 'stylus' && (tool === 'pen' || tool === 'eraser');
+  const pasteLongPressEnabled =
+    inputMode === 'stylus' || (inputMode === 'finger' && tool === 'select');
   const backgroundTap = Gesture.Tap()
     .runOnJS(true)
     .onEnd((event) => {
+      if (pasteMenu) {
+        setPasteMenu(null);
+        return;
+      }
+      if (
+        inputMode === 'stylus' &&
+        selectedStrokeIds.length > 0 &&
+        !insideSelection(event.x, event.y)
+      )
+        onClearRange();
       if (fingerImageTapEnabled && event.pointerType !== PointerType.STYLUS) {
         const point = toPagePoint(event.x, event.y);
         if (imageHandleAt(selectedItem, point)) return;
@@ -1488,10 +1559,32 @@ export function useDrawingCanvas({
       }
       if (selectedItemId) onBackgroundTap();
     });
-  const backgroundGesture = fingerImageTapEnabled
-    ? Gesture.Simultaneous(backgroundTap, gesture)
-    : selectedItemId
-      ? Gesture.Exclusive(backgroundTap, gesture)
+  const pasteLongPress = Gesture.LongPress()
+    .minDuration(450)
+    .maxDistance(12)
+    .runOnJS(true)
+    .onStart((event) => {
+      if (!pasteLongPressEnabled || event.pointerType === PointerType.STYLUS || !canPaste) return;
+      setPasteMenu({
+        left: Math.max(8, Math.min(size.width - 96, event.x - 44)),
+        top: Math.max(8, Math.min(size.height - CONTEXT_MENU_HEIGHT, event.y + 10)),
+        point: toPagePoint(event.x, event.y),
+      });
+    });
+  const tapGesture =
+    fingerImageTapEnabled ||
+    selectedItemId ||
+    (inputMode === 'stylus' && selectedStrokeIds.length > 0) ||
+    !!pasteMenu
+      ? backgroundTap
+      : null;
+  const backgroundGesture = pasteLongPressEnabled
+    ? Gesture.Simultaneous(
+        tapGesture ? Gesture.Exclusive(pasteLongPress, tapGesture) : pasteLongPress,
+        gesture,
+      )
+    : tapGesture
+      ? Gesture.Exclusive(tapGesture, gesture)
       : gesture;
 
   return {
@@ -1510,6 +1603,12 @@ export function useDrawingCanvas({
       selectedItem,
       selectedRange,
       width: menuWidth,
+      pastePosition: pasteMenu,
+      pasteReady: !!pasteMenu,
+      paste: () => {
+        if (pasteMenu) onPaste(pasteMenu.point);
+        setPasteMenu(null);
+      },
     },
     interaction: {
       draggingItem,

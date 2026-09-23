@@ -247,6 +247,11 @@ export function EditorScreen() {
             outline: editor.selection.outline,
             draft: editor.selection.draft,
             onDelete: editor.selection.remove,
+            onClear: editor.selection.clear,
+            onCopy: editor.selection.copy,
+            onCut: editor.selection.cut,
+            onPaste: editor.selection.paste,
+            canPaste: editor.selection.canPaste,
           }}
           itemActions={{
             onPress: items.tap,

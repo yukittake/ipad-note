@@ -1,4 +1,4 @@
-import { Canvas, Circle, Path, Rect, Skia } from '@shopify/react-native-skia';
+import { Canvas, Circle, DashPathEffect, Path, Rect, Skia } from '@shopify/react-native-skia';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
 import { memo } from 'react';
@@ -158,6 +158,11 @@ type DrawingCanvasProps = {
     outline: Selection | null;
     draft: Point[] | null;
     onDelete: () => void;
+    onClear: () => void;
+    onCopy: () => void;
+    onCut: () => void;
+    onPaste: (point: Point) => void;
+    canPaste: boolean;
   };
   itemActions: {
     onPress: (id: string) => void;
@@ -192,6 +197,11 @@ export function DrawingCanvas({
     outline: selection,
     draft: selectionDraft,
     onDelete: onDeleteSelection,
+    onClear: onClearSelection,
+    onCopy: onCopySelection,
+    onCut: onCutSelection,
+    onPaste: onPasteSelection,
+    canPaste,
   } = selectionState;
   const {
     onPress: onItemPress,
@@ -211,6 +221,9 @@ export function DrawingCanvas({
       selectedItem,
       selectedRange,
       width: menuWidth,
+      pastePosition,
+      pasteReady,
+      paste: pasteAtRequestedPoint,
     },
     interaction: {
       draggingItem,
@@ -227,6 +240,9 @@ export function DrawingCanvas({
       outline: selection,
       onItemTap: onItemPress,
       onBackgroundTap,
+      onClearRange: onClearSelection,
+      onPaste: onPasteSelection,
+      canPaste,
     },
     drawing: { tool, inputMode, begin, move, end, cancel },
     pages: { canGoPrevious, onChange: onPageChange },
@@ -279,7 +295,9 @@ export function DrawingCanvas({
           ))}
           {draft && <StrokePath stroke={draft} />}
           {selectionPath && (
-            <Path path={selectionPath} color="#3776b8" style="stroke" strokeWidth={1.5} />
+            <Path path={selectionPath} color="#3776b8" style="stroke" strokeWidth={1.5}>
+              <DashPathEffect intervals={[7, 5]} />
+            </Path>
           )}
           {tool === 'eraser' && eraserCursor && (
             <>
@@ -301,41 +319,78 @@ export function DrawingCanvas({
           )}
         </Canvas>
       </Animated.View>
-      {menuReady && (selectedItem || selectedRange) && !draggingItem && !draggingSelection && (
+      {menuReady &&
+        !pasteReady &&
+        (selectedItem || selectedRange) &&
+        !draggingItem &&
+        !draggingSelection && (
+          <View
+            style={[
+              styles.contextMenu,
+              { width: menuWidth, left: menuPosition?.left, top: menuPosition?.top },
+            ]}
+          >
+            {selectedItem ? (
+              <>
+                {selectedItem.kind === 'text' && (
+                  <Pressable
+                    accessibilityLabel="文字を編集"
+                    style={styles.contextAction}
+                    onPress={() => onEditItem(selectedItem.id)}
+                  >
+                    <Text style={styles.contextText}>編集</Text>
+                  </Pressable>
+                )}
+                <Pressable
+                  accessibilityLabel="アイテムを削除"
+                  style={styles.contextAction}
+                  onPress={() => onDeleteItem(selectedItem.id)}
+                >
+                  <Text style={styles.contextDelete}>削除</Text>
+                </Pressable>
+              </>
+            ) : (
+              <>
+                <Pressable
+                  accessibilityLabel="選択範囲をコピー"
+                  style={styles.contextAction}
+                  onPress={onCopySelection}
+                >
+                  <Text style={styles.contextText}>コピー</Text>
+                </Pressable>
+                <Pressable
+                  accessibilityLabel="選択範囲をカット"
+                  style={styles.contextAction}
+                  onPress={onCutSelection}
+                >
+                  <Text style={styles.contextText}>カット</Text>
+                </Pressable>
+                <Pressable
+                  accessibilityLabel="選択を削除"
+                  style={styles.contextAction}
+                  onPress={onDeleteSelection}
+                >
+                  <Text style={styles.contextDelete}>削除</Text>
+                </Pressable>
+              </>
+            )}
+          </View>
+        )}
+      {pasteReady && pastePosition && (
         <View
           style={[
             styles.contextMenu,
-            { width: menuWidth, left: menuPosition?.left, top: menuPosition?.top },
+            styles.pasteMenu,
+            { left: pastePosition.left, top: pastePosition.top },
           ]}
         >
-          {selectedItem ? (
-            <>
-              {selectedItem.kind === 'text' && (
-                <Pressable
-                  accessibilityLabel="文字を編集"
-                  style={styles.contextAction}
-                  onPress={() => onEditItem(selectedItem.id)}
-                >
-                  <Text style={styles.contextText}>編集</Text>
-                </Pressable>
-              )}
-              <Pressable
-                accessibilityLabel="アイテムを削除"
-                style={styles.contextAction}
-                onPress={() => onDeleteItem(selectedItem.id)}
-              >
-                <Text style={styles.contextDelete}>削除</Text>
-              </Pressable>
-            </>
-          ) : (
-            <Pressable
-              accessibilityLabel="選択を削除"
-              style={styles.contextAction}
-              onPress={onDeleteSelection}
-            >
-              <Text style={styles.contextDelete}>選択を削除</Text>
-            </Pressable>
-          )}
+          <Pressable
+            accessibilityLabel="選択範囲をペースト"
+            style={styles.contextAction}
+            onPress={pasteAtRequestedPoint}
+          >
+            <Text style={styles.contextText}>ペースト</Text>
+          </Pressable>
         </View>
       )}
     </View>
@@ -400,6 +455,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 6,
   },
+  pasteMenu: { width: 88 },
   contextText: { color: '#314f72', fontSize: 16, fontWeight: '600' },
   contextDelete: { color: '#a34a4a', fontSize: 16, fontWeight: '600' },
 });
