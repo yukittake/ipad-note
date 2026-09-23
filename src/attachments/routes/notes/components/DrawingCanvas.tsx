@@ -347,7 +347,10 @@ export function DrawingCanvas({
                 {selectedItem.kind === 'text' && (
                   <Pressable
                     accessibilityLabel="文字を編集"
-                    style={styles.contextAction}
+                    style={({ pressed }) => [
+                      styles.contextAction,
+                      pressed && styles.contextActionPressed,
+                    ]}
                     onPress={() => onEditItem(selectedItem.id)}
                   >
                     <Text style={styles.contextText}>編集</Text>
@@ -355,7 +358,10 @@ export function DrawingCanvas({
                 )}
                 <Pressable
                   accessibilityLabel="アイテムを削除"
-                  style={styles.contextAction}
+                  style={({ pressed }) => [
+                    styles.contextAction,
+                    pressed && styles.contextActionPressed,
+                  ]}
                   onPress={() => onDeleteItem(selectedItem.id)}
                 >
                   <Text style={styles.contextDelete}>削除</Text>
@@ -365,21 +371,33 @@ export function DrawingCanvas({
               <>
                 <Pressable
                   accessibilityLabel="選択範囲をコピー"
-                  style={styles.contextAction}
-                  onPress={onCopySelection}
+                  style={({ pressed }) => [
+                    styles.contextAction,
+                    pressed && styles.contextActionPressed,
+                  ]}
+                  onPress={() => {
+                    onCopySelection();
+                    onClearSelection();
+                  }}
                 >
                   <Text style={styles.contextText}>コピー</Text>
                 </Pressable>
                 <Pressable
                   accessibilityLabel="選択範囲をカット"
-                  style={styles.contextAction}
+                  style={({ pressed }) => [
+                    styles.contextAction,
+                    pressed && styles.contextActionPressed,
+                  ]}
                   onPress={onCutSelection}
                 >
                   <Text style={styles.contextText}>カット</Text>
                 </Pressable>
                 <Pressable
                   accessibilityLabel="選択を削除"
-                  style={styles.contextAction}
+                  style={({ pressed }) => [
+                    styles.contextAction,
+                    pressed && styles.contextActionPressed,
+                  ]}
                   onPress={onDeleteSelection}
                 >
                   <Text style={styles.contextDelete}>削除</Text>
@@ -398,7 +416,7 @@ export function DrawingCanvas({
         >
           <Pressable
             accessibilityLabel="選択範囲をペースト"
-            style={styles.contextAction}
+            style={({ pressed }) => [styles.contextAction, pressed && styles.contextActionPressed]}
             onPress={pasteAtRequestedPoint}
           >
             <Text style={styles.contextText}>ペースト</Text>
@@ -466,6 +484,11 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingHorizontal: 8,
     paddingVertical: 6,
+  },
+  contextActionPressed: {
+    backgroundColor: '#dfe8ef',
+    borderRadius: 9,
+    transform: [{ scale: 0.96 }],
   },
   pasteMenu: { width: 88 },
   contextText: { color: '#314f72', fontSize: 16, fontWeight: '600' },
