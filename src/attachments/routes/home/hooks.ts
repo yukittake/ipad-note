@@ -7,6 +7,7 @@ import {
   deleteNote,
   listNotes,
   pickNoteFolder,
+  purgeExpiredDeletedNotes,
   restoreNoteFolders,
   type Note,
 } from '@/infra/local/notes';
@@ -44,6 +45,7 @@ function useNotes() {
     const folder = await pickNoteFolder();
     if (!folder) return null;
     const count = await connectNoteFolder(folder);
+    await purgeExpiredDeletedNotes();
     await refresh();
     return count;
   };
@@ -65,6 +67,7 @@ export function useHomeScreen() {
 
   const restore = useCallback(async () => {
     await restoreNoteFolders();
+    await purgeExpiredDeletedNotes();
     await refresh();
   }, [refresh]);
 
@@ -107,18 +110,22 @@ export function useHomeScreen() {
   };
 
   const confirmDelete = (note: Note) =>
-    Alert.alert('ノートを削除', `「${note.title}」を削除しますか？`, [
-      { text: 'キャンセル' },
-      {
-        text: '削除',
-        style: 'destructive',
-        onPress: () => {
-          void remove(note.id).catch((cause) =>
-            Alert.alert('ノートを削除できませんでした', String(cause)),
-          );
+    Alert.alert(
+      'ノートを削除',
+      `「${note.title}」を削除しますか？\n削除したデータは7日後に完全に削除されます。`,
+      [
+        { text: 'キャンセル' },
+        {
+          text: '削除',
+          style: 'destructive',
+          onPress: () => {
+            void remove(note.id).catch((cause) =>
+              Alert.alert('ノートを削除できませんでした', String(cause)),
+            );
+          },
         },
-      },
-    ]);
+      ],
+    );
 
   const openNote = (id: string) => {
     if (openingNote.current) return;
@@ -130,6 +137,7 @@ export function useHomeScreen() {
     list: { notes: state.notes, error: state.error, detailsNoteId, setDetailsNoteId },
     actions: {
       openNote,
+      openTrash: () => router.push('/trash'),
       chooseNewNoteLocation,
       connectFolder,
       confirmDelete,

@@ -72,6 +72,9 @@ export function HomeScreen() {
       <View style={styles.header}>
         <Text style={styles.heading}>ノート</Text>
         <View style={styles.headerActions}>
+          <Pressable style={styles.secondaryAction} onPress={actions.openTrash}>
+            <Text style={styles.secondaryActionText}>ゴミ箱</Text>
+          </Pressable>
           <Pressable style={styles.add} onPress={actions.connectFolder}>
             <Text style={styles.addText}>外部フォルダを追加</Text>
           </Pressable>
@@ -119,6 +122,14 @@ const styles = StyleSheet.create({
   heading: { fontSize: 34, fontWeight: '700', color: '#252927' },
   add: { backgroundColor: '#314f72', borderRadius: 12, paddingHorizontal: 18, paddingVertical: 12 },
   addText: { color: 'white', fontWeight: '700' },
+  secondaryAction: {
+    borderColor: '#314f72',
+    borderRadius: 12,
+    borderWidth: 1,
+    paddingHorizontal: 18,
+    paddingVertical: 12,
+  },
+  secondaryActionText: { color: '#314f72', fontWeight: '700' },
   list: { paddingHorizontal: 24, paddingBottom: 32 },
   card: {
     backgroundColor: 'white',
