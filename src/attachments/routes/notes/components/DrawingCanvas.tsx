@@ -45,6 +45,20 @@ const StrokePath = memo(function StrokePath({ stroke }: { stroke: Stroke }) {
   );
 });
 
+const CommittedStrokeCanvas = memo(function CommittedStrokeCanvas({
+  strokes,
+}: {
+  strokes: Stroke[];
+}) {
+  return (
+    <Canvas style={StyleSheet.absoluteFill}>
+      {strokes.map((stroke) => (
+        <StrokePath key={stroke.id} stroke={stroke} />
+      ))}
+    </Canvas>
+  );
+});
+
 const NotebookPaper = memo(function NotebookPaper({
   width,
   height,
@@ -289,10 +303,8 @@ export function DrawingCanvas({
         ))}
       </Animated.View>
       <Animated.View pointerEvents="none" style={[styles.strokeLayer, pageStyle]}>
+        <CommittedStrokeCanvas strokes={strokes} />
         <Canvas style={StyleSheet.absoluteFill}>
-          {strokes.map((stroke) => (
-            <StrokePath key={stroke.id} stroke={stroke} />
-          ))}
           {draft && <StrokePath stroke={draft} />}
           {selectionPath && (
             <Path path={selectionPath} color="#3776b8" style="stroke" strokeWidth={1.5}>

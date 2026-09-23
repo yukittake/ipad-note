@@ -123,6 +123,20 @@ export function EditorScreen() {
           </Pressable>
         )}
         <View style={styles.pageActions}>
+          <Text
+            accessibilityLiveRegion="polite"
+            style={[
+              extraStyles.saveStatus,
+              editor.document.saveStatus === 'saving' && extraStyles.savingStatus,
+              editor.document.saveStatus === 'error' && extraStyles.saveErrorStatus,
+            ]}
+          >
+            {editor.document.saveStatus === 'saving'
+              ? '保存中…'
+              : editor.document.saveStatus === 'error'
+                ? '保存に失敗'
+                : '保存完了'}
+          </Text>
           <Text style={styles.pageCount}>
             {editor.document.pageIndex + 1} / {editor.document.pages.length} ページ
           </Text>
@@ -475,4 +489,7 @@ const extraStyles = StyleSheet.create({
     color: '#8a5a19',
     backgroundColor: '#fff0d0',
   },
+  saveStatus: { color: '#64706a', fontSize: 13, minWidth: 72, textAlign: 'right' },
+  savingStatus: { color: '#8a5a19' },
+  saveErrorStatus: { color: '#a34a4a' },
 });

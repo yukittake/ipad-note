@@ -1,6 +1,7 @@
 // エディタ本体の状態・操作を管理するHook。
 /* eslint-disable react-hooks/set-state-in-effect */
 import { useEffect, useRef, useState } from 'react';
+import { AppState } from 'react-native';
 import {
   addPage,
   deletePage,
@@ -39,6 +40,8 @@ import {
 import type { Box, Selection, Tool } from './types';
 
 type StrokeClipboard = { strokes: Stroke[]; outline: Point[]; bounds: Box };
+type SaveStatus = 'saved' | 'saving' | 'error';
+type PendingSave = { pageId: string; content: PageContent };
 
 export function useEditor(noteId: string) {
   const [note, setNote] = useState<Note | null>(null);
@@ -59,6 +62,7 @@ export function useEditor(noteId: string) {
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [selectionDraft, setSelectionDraft] = useState<Point[] | null>(null);
   const [clipboard, setClipboard] = useState<StrokeClipboard | null>(null);
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>('saved');
   const gesture = useRef<{
     start: Point;
     mode: 'draw' | 'erase' | 'select' | 'move';
@@ -71,14 +75,30 @@ export function useEditor(noteId: string) {
   const strokesRef = useRef(strokes);
   const itemsRef = useRef(items);
   const draftRef = useRef(draft);
+  const committedDraftIdRef = useRef<string | null>(null);
+  const draftClearFrameRef = useRef<number | null>(null);
   const changingPages = useRef(false);
   const historyRef = useRef<Record<string, { past: PageContent[]; future: PageContent[] }>>({});
+  const pendingSaveRef = useRef<PendingSave | null>(null);
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const saveChainRef = useRef<Promise<void>>(Promise.resolve());
+  const flushPersistRef = useRef<() => Promise<void>>(async () => {});
+  const mountedRef = useRef(true);
   const [historyAvailability, setHistoryAvailability] = useState({
     canUndo: false,
     canRedo: false,
   });
   useEffect(() => {
     strokesRef.current = strokes;
+    const committedId = committedDraftIdRef.current;
+    if (!committedId || !strokes.some((stroke) => stroke.id === committedId)) return;
+    if (draftClearFrameRef.current !== null) cancelAnimationFrame(draftClearFrameRef.current);
+    draftClearFrameRef.current = requestAnimationFrame(() => {
+      draftClearFrameRef.current = null;
+      setDraft((current) => (current?.id === committedId ? null : current));
+      if (draftRef.current?.id === committedId) draftRef.current = null;
+      if (committedDraftIdRef.current === committedId) committedDraftIdRef.current = null;
+    });
   }, [strokes]);
   useEffect(() => {
     itemsRef.current = items;
@@ -106,7 +126,15 @@ export function useEditor(noteId: string) {
       setDraft(straightened);
     }, STRAIGHTEN_HOLD_MS);
   };
-  useEffect(() => () => clearStraightenTimer(), []);
+  useEffect(
+    () => () => {
+      mountedRef.current = false;
+      clearStraightenTimer();
+      if (draftClearFrameRef.current !== null) cancelAnimationFrame(draftClearFrameRef.current);
+      void flushPersistRef.current();
+    },
+    [],
+  );
   const page = pages[pageIndex];
   const pageId = page?.id;
 
@@ -133,6 +161,9 @@ export function useEditor(noteId: string) {
     clearStraightenTimer();
     gesture.current = null;
     draftRef.current = null;
+    committedDraftIdRef.current = null;
+    if (draftClearFrameRef.current !== null) cancelAnimationFrame(draftClearFrameRef.current);
+    draftClearFrameRef.current = null;
     setDraft(null);
     setEraserCursor(null);
     setLoadedPageId(null);
@@ -184,22 +215,60 @@ export function useEditor(noteId: string) {
       { strokes: before, items: itemsRef.current },
       { strokes: after, items: itemsRef.current },
     );
-  const persist = (pageId: string, content: PageContent) => {
-    void savePageContent(noteId, pageId, content)
-      .then(() => setStorageError(''))
-      .catch((error) => {
+  const flushPersist = async () => {
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = null;
+    const pending = pendingSaveRef.current;
+    pendingSaveRef.current = null;
+    if (!pending) return saveChainRef.current;
+    const operation = saveChainRef.current
+      .catch(() => {})
+      .then(async () => {
+        if (mountedRef.current) setSaveStatus('saving');
+        await savePageContent(noteId, pending.pageId, pending.content);
+      });
+    saveChainRef.current = operation;
+    try {
+      await operation;
+      if (mountedRef.current) {
+        setStorageError('');
+        if (!pendingSaveRef.current && saveChainRef.current === operation) setSaveStatus('saved');
+      }
+    } catch (error) {
+      if (mountedRef.current) {
+        setSaveStatus('error');
         setStorageError(`保存できませんでした: ${String(error)}`);
         setAccessError(String(error));
         setLoadedPageId(null);
-      });
+      }
+    }
   };
-  const commit = (next: Stroke[], recordChange = true) => {
+  useEffect(() => {
+    flushPersistRef.current = flushPersist;
+  });
+  const persist = (pageId: string, content: PageContent) => {
+    pendingSaveRef.current = { pageId, content };
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(() => {
+      saveTimerRef.current = null;
+      void flushPersistRef.current();
+    }, 500);
+  };
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state === 'inactive' || state === 'background') void flushPersistRef.current();
+    });
+    return () => subscription.remove();
+  }, []);
+  useEffect(() => () => void flushPersistRef.current(), [pageId]);
+
+  const commit = (next: Stroke[], recordChange = true, saveChange = true) => {
     if (next === strokesRef.current) return;
     next = uniqueElements(next);
     if (recordChange) record(strokesRef.current, next);
     setStrokes(next);
     strokesRef.current = next;
-    if (page) persist(page.id, { strokes: next, items: itemsRef.current });
+    if (page && saveChange) persist(page.id, { strokes: next, items: itemsRef.current });
   };
   const commitItems = (next: PageItem[]) => {
     if (!page || loadedPageId !== page.id) return;
@@ -250,6 +319,9 @@ export function useEditor(noteId: string) {
   const begin = (point: Point) => {
     if (tool === 'hand' || !page || loadedPageId !== page.id) return;
     if (tool === 'pen') {
+      committedDraftIdRef.current = null;
+      if (draftClearFrameRef.current !== null) cancelAnimationFrame(draftClearFrameRef.current);
+      draftClearFrameRef.current = null;
       const stroke = { id: newElementId(), color, width, points: [point] };
       gesture.current = { start: point, mode: 'draw' };
       setDraft(stroke);
@@ -281,7 +353,7 @@ export function useEditor(noteId: string) {
         ? current.filter((stroke) => !strokeTouchesEraser(stroke, from, to))
         : current.flatMap((stroke) => eraseStrokePortion(stroke, from, to));
     if (next.length !== current.length || next.some((stroke, index) => stroke !== current[index]))
-      commit(next, false);
+      commit(next, false, false);
   };
 
   const move = (point: Point) => {
@@ -335,6 +407,7 @@ export function useEditor(noteId: string) {
     clearStraightenTimer();
     if (current.mode === 'draw' && draftRef.current) {
       const stroke = draftRef.current;
+      committedDraftIdRef.current = stroke.id;
       commit([
         ...strokesRef.current,
         {
@@ -345,11 +418,12 @@ export function useEditor(noteId: string) {
               : stroke.points,
         },
       ]);
-      setDraft(null);
-      draftRef.current = null;
     } else if (current.mode === 'erase') {
       erase(current.start, point);
-      if (current.originals) record(current.originals, strokesRef.current);
+      if (current.originals && current.originals !== strokesRef.current) {
+        record(current.originals, strokesRef.current);
+        if (page) persist(page.id, { strokes: strokesRef.current, items: itemsRef.current });
+      }
     } else if (current.mode === 'select') {
       const points = [...(current.selectionPoints ?? [current.start]), point];
       const bounds = boundsOf(points);
@@ -395,7 +469,7 @@ export function useEditor(noteId: string) {
       setStrokes(current.originals);
       if (current.selectionStart) setSelection(current.selectionStart);
     } else if (current.mode === 'erase' && current.originals) {
-      commit(current.originals, false);
+      commit(current.originals, false, false);
     } else if (current.mode === 'select') {
       setSelectionDraft(null);
     }
@@ -477,6 +551,7 @@ export function useEditor(noteId: string) {
     if (changingPages.current || loadedPageId !== page?.id) return;
     changingPages.current = true;
     try {
+      await flushPersist();
       const next = await addPage(noteId);
       setPages((current) => [...current, next]);
       setPageIndex(pages.length);
@@ -488,6 +563,7 @@ export function useEditor(noteId: string) {
     if (changingPages.current || !page || loadedPageId !== page.id) return;
     changingPages.current = true;
     try {
+      await flushPersist();
       const remaining = await deletePage(noteId, page.id);
       delete historyRef.current[page.id];
       setPages(remaining);
@@ -505,6 +581,7 @@ export function useEditor(noteId: string) {
     void (async () => {
       setLoadedPageId(null);
       try {
+        await flushPersist();
         await reloadExternalNote(noteId);
         const [loadedNote, loadedPages] = await Promise.all([getNote(noteId), listPages(noteId)]);
         setNote(loadedNote);
@@ -523,7 +600,11 @@ export function useEditor(noteId: string) {
       note,
       pages,
       pageIndex,
-      setPageIndex,
+      setPageIndex: (index: number) => {
+        void flushPersist();
+        setPageIndex(index);
+      },
+      saveStatus,
       storageError,
       accessError,
       reload,
