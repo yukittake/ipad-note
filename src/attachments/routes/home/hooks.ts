@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { Alert, AppState } from 'react-native';
 import {
@@ -59,6 +59,7 @@ function useNotes() {
 export function useHomeScreen() {
   const router = useRouter();
   const [detailsNoteId, setDetailsNoteId] = useState<string | null>(null);
+  const openingNote = useRef(false);
   const { state, actions } = useNotes();
   const { refresh, create, connect, remove } = actions;
 
@@ -69,6 +70,7 @@ export function useHomeScreen() {
 
   useFocusEffect(
     useCallback(() => {
+      openingNote.current = false;
       void restore().catch(console.warn);
     }, [restore]),
   );
@@ -118,10 +120,16 @@ export function useHomeScreen() {
       },
     ]);
 
+  const openNote = (id: string) => {
+    if (openingNote.current) return;
+    openingNote.current = true;
+    router.push(`/notes/${id}`);
+  };
+
   return {
     list: { notes: state.notes, error: state.error, detailsNoteId, setDetailsNoteId },
     actions: {
-      openNote: (id: string) => router.push(`/notes/${id}`),
+      openNote,
       chooseNewNoteLocation,
       connectFolder,
       confirmDelete,
