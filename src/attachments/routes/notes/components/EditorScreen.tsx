@@ -11,6 +11,12 @@ import { isNoteFolderConnected } from '@/infra/local/notes';
 
 export function EditorScreen() {
   const { editor, tools, navigation, title, toast, text, items } = useEditorScreen();
+  const savedTime = editor.document.lastSavedAt
+    ? new Date(editor.document.lastSavedAt).toLocaleTimeString('ja-JP', {
+        hour: '2-digit',
+        minute: '2-digit',
+      })
+    : null;
   if (!editor.document.note)
     return (
       <SafeAreaView style={styles.root}>
@@ -135,7 +141,9 @@ export function EditorScreen() {
               ? '保存中…'
               : editor.document.saveStatus === 'error'
                 ? '保存に失敗'
-                : '保存完了'}
+                : savedTime
+                  ? `保存完了 ${savedTime}`
+                  : '保存完了'}
           </Text>
           <Text style={styles.pageCount}>
             {editor.document.pageIndex + 1} / {editor.document.pages.length} ページ
@@ -489,7 +497,7 @@ const extraStyles = StyleSheet.create({
     color: '#8a5a19',
     backgroundColor: '#fff0d0',
   },
-  saveStatus: { color: '#64706a', fontSize: 13, minWidth: 72, textAlign: 'right' },
+  saveStatus: { color: '#64706a', fontSize: 13, minWidth: 142, textAlign: 'right' },
   savingStatus: { color: '#8a5a19' },
   saveErrorStatus: { color: '#a34a4a' },
 });

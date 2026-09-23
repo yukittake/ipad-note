@@ -67,6 +67,7 @@ export function useEditor(noteId: string) {
   const [selectionDraft, setSelectionDraft] = useState<Point[] | null>(null);
   const [clipboard, setClipboard] = useState<StrokeClipboard | null>(null);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('saved');
+  const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
   const gesture = useRef<{
     start: Point;
     mode: 'draw' | 'erase' | 'select' | 'move';
@@ -246,7 +247,10 @@ export function useEditor(noteId: string) {
       await operation;
       if (mountedRef.current) {
         setStorageError('');
-        if (!pendingSaveRef.current && saveChainRef.current === operation) setSaveStatus('saved');
+        if (!pendingSaveRef.current && saveChainRef.current === operation) {
+          setLastSavedAt(Date.now());
+          setSaveStatus('saved');
+        }
       }
     } catch (error) {
       if (mountedRef.current) {
@@ -682,6 +686,7 @@ export function useEditor(noteId: string) {
         setPageIndex(index);
       },
       saveStatus,
+      lastSavedAt,
       storageError,
       accessError,
       reload,
