@@ -780,7 +780,10 @@ export function useEditor(noteId: string) {
     canvas: { strokes, items, draft, eraserCursor, begin, move, end, cancel },
     preferences: {
       tool,
-      setTool,
+      setTool: (nextTool: Tool) => {
+        if (nextTool === 'pen') clearSelection();
+        setTool(nextTool);
+      },
       inputMode,
       setInputMode,
       eraserMode,
@@ -827,6 +830,10 @@ export function useEditorScreen() {
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const toastOpacity = useSharedValue(0);
   const toastStyle = useAnimatedStyle(() => ({ opacity: toastOpacity.value }));
+
+  useEffect(() => {
+    if (editor.preferences.tool === 'pen') setSelectedItemId(null);
+  }, [editor.preferences.tool]);
 
   useEffect(
     () => () => {
