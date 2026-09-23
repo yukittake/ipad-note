@@ -2,9 +2,15 @@
 /* eslint-disable react-hooks/immutability, react-hooks/refs, react-hooks/set-state-in-effect */
 import { useEffect, useRef, useState } from 'react';
 import { Gesture, PointerType } from 'react-native-gesture-handler';
-import { useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
-import type { PageItem, Point } from '@/infra/local/notes';
-import { CONTEXT_MENU_HEIGHT, RESIZE_SIDES, type ResizeSide } from '../constants';
+import { runOnJS, useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
+import { Skia } from '@shopify/react-native-skia';
+import type { PageItem, Point, Stroke } from '@/infra/local/notes';
+import {
+  CONTEXT_MENU_HEIGHT,
+  HOLD_MOVE_TOLERANCE,
+  RESIZE_SIDES,
+  type ResizeSide,
+} from '../constants';
 import type { InputMode } from '../stores';
 import { insidePolygon, menuCoordinates, resizedImageBox } from './lib';
 import type { Box, Selection, Tool } from './types';
@@ -12,6 +18,8 @@ import type { Box, Selection, Tool } from './types';
 export type DrawingCanvasOptions = {
   content: {
     items: PageItem[];
+    strokes: Stroke[];
+    draft: Stroke | null;
     onItemMove: (id: string, x: number, y: number) => void;
     onItemResize: (id: string, box: Box) => void;
   };
@@ -37,7 +45,7 @@ export type DrawingCanvasOptions = {
 };
 
 export function useDrawingCanvas({
-  content: { items, onItemMove, onItemResize },
+  content: { items, strokes, draft, onItemMove, onItemResize },
   selection: {
     itemId: selectedItemId,
     strokeIds: selectedStrokeIds,
@@ -73,6 +81,35 @@ export function useDrawingCanvas({
   const panningActive = useRef(false);
   const twoFingerPanning = useRef(false);
   const lastTwoFingerTranslation = useRef({ x: 0, y: 0 });
+  const livePenBuilder = useSharedValue(Skia.PathBuilder.Make());
+  const livePenPath = useSharedValue(Skia.Path.Make());
+  const livePenOpacity = useSharedValue(0);
+  const penActive = useSharedValue(false);
+  const penLastX = useSharedValue(0);
+  const penLastY = useSharedValue(0);
+  const livePathClearFrame = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (draft) {
+      livePenOpacity.value = 0;
+      return;
+    }
+    if (tool !== 'pen' || penActive.value) return;
+    if (livePathClearFrame.current !== null) cancelAnimationFrame(livePathClearFrame.current);
+    livePathClearFrame.current = requestAnimationFrame(() => {
+      livePathClearFrame.current = null;
+      if (penActive.value) return;
+      livePenBuilder.value.reset();
+      livePenPath.value = livePenBuilder.value.build();
+      livePenOpacity.value = 0;
+    });
+  }, [draft, livePenBuilder, livePenOpacity, livePenPath, penActive, strokes, tool]);
+  useEffect(
+    () => () => {
+      if (livePathClearFrame.current !== null) cancelAnimationFrame(livePathClearFrame.current);
+    },
+    [],
+  );
 
   const snapToBounds = (width = size.width, height = size.height) => {
     const nextScale = Math.max(1, Math.min(4, scale.value));
@@ -198,6 +235,62 @@ export function useDrawingCanvas({
       setDraggingSelection(false);
     });
 
+  const penGesture = Gesture.Pan()
+    .minDistance(0)
+    .onBegin((event) => {
+      'worklet';
+      const enabled =
+        event.numberOfPointers === 1 &&
+        (inputMode === 'finger' || event.pointerType === PointerType.STYLUS);
+      penActive.value = enabled;
+      if (!enabled) return;
+      const point = {
+        x: (event.x - size.width / 2 - offsetX.value) / scale.value + size.width / 2,
+        y: (event.y - size.height / 2 - offsetY.value) / scale.value + size.height / 2,
+      };
+      penLastX.value = point.x;
+      penLastY.value = point.y;
+      livePenBuilder.value.reset();
+      livePenBuilder.value.moveTo(point.x, point.y);
+      livePenPath.value = livePenBuilder.value.build();
+      livePenOpacity.value = 1;
+      runOnJS(begin)(point);
+    })
+    .onUpdate((event) => {
+      'worklet';
+      if (!penActive.value || event.numberOfPointers !== 1) return;
+      const point = {
+        x: (event.x - size.width / 2 - offsetX.value) / scale.value + size.width / 2,
+        y: (event.y - size.height / 2 - offsetY.value) / scale.value + size.height / 2,
+      };
+      if (Math.hypot(point.x - penLastX.value, point.y - penLastY.value) < HOLD_MOVE_TOLERANCE)
+        return;
+      penLastX.value = point.x;
+      penLastY.value = point.y;
+      livePenBuilder.value.lineTo(point.x, point.y);
+      livePenPath.value = livePenBuilder.value.build();
+      runOnJS(move)(point);
+    })
+    .onEnd((event) => {
+      'worklet';
+      if (!penActive.value) return;
+      penActive.value = false;
+      const point = {
+        x: (event.x - size.width / 2 - offsetX.value) / scale.value + size.width / 2,
+        y: (event.y - size.height / 2 - offsetY.value) / scale.value + size.height / 2,
+      };
+      runOnJS(end)(point);
+    })
+    .onFinalize(() => {
+      'worklet';
+      if (!penActive.value) return;
+      penActive.value = false;
+      livePenBuilder.value.reset();
+      livePenPath.value = livePenBuilder.value.build();
+      livePenOpacity.value = 0;
+      runOnJS(cancel)();
+    });
+
   const handPan = Gesture.Pan()
     .maxPointers(1)
     .runOnJS(true)
@@ -311,6 +404,13 @@ export function useDrawingCanvas({
     .minPointers(2)
     .runOnJS(true)
     .onStart(() => {
+      if (penActive.value) {
+        penActive.value = false;
+        livePenBuilder.value.reset();
+        livePenPath.value = livePenBuilder.value.build();
+        livePenOpacity.value = 0;
+        cancel();
+      }
       if (imageGesture.current) {
         imageGesture.current = null;
         setImagePreview(null);
@@ -344,6 +444,13 @@ export function useDrawingCanvas({
     .runOnJS(true)
     .onStart((event) => {
       if (event.pointerType === PointerType.STYLUS) return;
+      if (penActive.value) {
+        penActive.value = false;
+        livePenBuilder.value.reset();
+        livePenPath.value = livePenBuilder.value.build();
+        livePenOpacity.value = 0;
+        cancel();
+      }
       if (imageGesture.current) {
         imageGesture.current = null;
         setImagePreview(null);
@@ -388,9 +495,13 @@ export function useDrawingCanvas({
   const gesture =
     tool === 'hand'
       ? Gesture.Simultaneous(handPan, twoFingerPan, pinch)
-      : inputMode === 'stylus'
-        ? Gesture.Simultaneous(drawGesture, handPan, twoFingerPan, pinch)
-        : Gesture.Simultaneous(drawGesture, twoFingerPan, pinch);
+      : tool === 'pen'
+        ? inputMode === 'stylus'
+          ? Gesture.Simultaneous(penGesture, handPan, twoFingerPan, pinch)
+          : Gesture.Simultaneous(penGesture, twoFingerPan, pinch)
+        : inputMode === 'stylus'
+          ? Gesture.Simultaneous(drawGesture, handPan, twoFingerPan, pinch)
+          : Gesture.Simultaneous(drawGesture, twoFingerPan, pinch);
   const fingerImageTapEnabled = inputMode === 'stylus' && (tool === 'pen' || tool === 'eraser');
   const pasteLongPressEnabled =
     inputMode === 'stylus' || (inputMode === 'finger' && tool === 'select');
@@ -485,5 +596,6 @@ export function useDrawingCanvas({
       imagePreview,
       backgroundGesture,
     },
+    livePen: { path: livePenPath, opacity: livePenOpacity },
   };
 }

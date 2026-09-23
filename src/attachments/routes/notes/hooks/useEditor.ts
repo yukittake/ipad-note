@@ -77,6 +77,8 @@ export function useEditor(noteId: string) {
     straightened?: boolean;
   } | null>(null);
   const straightenTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingPenPointsRef = useRef<Point[]>([]);
+  const penPointsFrameRef = useRef<number | null>(null);
   const strokesRef = useRef(strokes);
   const strokeSpatialIndexRef = useRef(buildStrokeSpatialIndex(strokes));
   const pendingEraserStrokesRef = useRef<Stroke[] | null>(null);
@@ -134,10 +136,37 @@ export function useEditor(noteId: string) {
       setDraft(straightened);
     }, STRAIGHTEN_HOLD_MS);
   };
+  const flushPendingPenPoints = () => {
+    if (penPointsFrameRef.current !== null) cancelAnimationFrame(penPointsFrameRef.current);
+    penPointsFrameRef.current = null;
+    const points = pendingPenPointsRef.current;
+    pendingPenPointsRef.current = [];
+    const current = gesture.current;
+    const stroke = draftRef.current;
+    if (current?.mode !== 'draw' || !stroke || !points.length) return;
+    if (current.straightened) {
+      const last = points[points.length - 1];
+      const next = { ...stroke, points: [stroke.points[0], last] };
+      draftRef.current = next;
+      setDraft(next);
+    } else {
+      for (const point of points) {
+        const last = stroke.points[stroke.points.length - 1];
+        if (Math.hypot(point.x - last.x, point.y - last.y) >= HOLD_MOVE_TOLERANCE)
+          stroke.points.push(point);
+      }
+      scheduleStraighten();
+    }
+  };
+  const schedulePenPointsFlush = () => {
+    if (penPointsFrameRef.current !== null) return;
+    penPointsFrameRef.current = requestAnimationFrame(flushPendingPenPoints);
+  };
   useEffect(
     () => () => {
       mountedRef.current = false;
       clearStraightenTimer();
+      if (penPointsFrameRef.current !== null) cancelAnimationFrame(penPointsFrameRef.current);
       if (draftClearFrameRef.current !== null) cancelAnimationFrame(draftClearFrameRef.current);
       if (eraserFrameRef.current !== null) cancelAnimationFrame(eraserFrameRef.current);
       void flushPersistRef.current();
@@ -170,6 +199,9 @@ export function useEditor(noteId: string) {
     clearStraightenTimer();
     gesture.current = null;
     draftRef.current = null;
+    pendingPenPointsRef.current = [];
+    if (penPointsFrameRef.current !== null) cancelAnimationFrame(penPointsFrameRef.current);
+    penPointsFrameRef.current = null;
     committedDraftIdRef.current = null;
     if (draftClearFrameRef.current !== null) cancelAnimationFrame(draftClearFrameRef.current);
     draftClearFrameRef.current = null;
@@ -371,9 +403,12 @@ export function useEditor(noteId: string) {
       committedDraftIdRef.current = null;
       if (draftClearFrameRef.current !== null) cancelAnimationFrame(draftClearFrameRef.current);
       draftClearFrameRef.current = null;
+      pendingPenPointsRef.current = [];
+      if (penPointsFrameRef.current !== null) cancelAnimationFrame(penPointsFrameRef.current);
+      penPointsFrameRef.current = null;
       const stroke = { id: newElementId(), color, width, points: [point] };
       gesture.current = { start: point, mode: 'draw' };
-      setDraft(stroke);
+      setDraft(null);
       draftRef.current = stroke;
       scheduleStraighten();
     } else if (tool === 'eraser') {
@@ -427,18 +462,8 @@ export function useEditor(noteId: string) {
     const current = gesture.current;
     if (!current) return;
     if (current.mode === 'draw') {
-      const previous = draftRef.current;
-      if (previous) {
-        const last = previous.points[previous.points.length - 1];
-        if (Math.hypot(point.x - last.x, point.y - last.y) < HOLD_MOVE_TOLERANCE) return;
-        const next = {
-          ...previous,
-          points: current.straightened ? [previous.points[0], point] : [...previous.points, point],
-        };
-        draftRef.current = next;
-        setDraft(next);
-        if (!current.straightened) scheduleStraighten();
-      }
+      pendingPenPointsRef.current.push(point);
+      schedulePenPointsFlush();
     } else if (current.mode === 'erase') {
       pendingEraserCursorRef.current = point;
       scheduleEraserRender();
@@ -471,6 +496,10 @@ export function useEditor(noteId: string) {
   const end = (point: Point) => {
     const current = gesture.current;
     if (!current) return;
+    if (current.mode === 'draw') {
+      pendingPenPointsRef.current.push(point);
+      flushPendingPenPoints();
+    }
     clearStraightenTimer();
     if (current.mode === 'draw' && draftRef.current) {
       const stroke = draftRef.current;
@@ -531,6 +560,9 @@ export function useEditor(noteId: string) {
     if (!current) return;
     clearStraightenTimer();
     if (current.mode === 'draw') {
+      pendingPenPointsRef.current = [];
+      if (penPointsFrameRef.current !== null) cancelAnimationFrame(penPointsFrameRef.current);
+      penPointsFrameRef.current = null;
       setEraserCursor(null);
       draftRef.current = null;
       setDraft(null);

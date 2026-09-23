@@ -189,6 +189,8 @@ type DrawingCanvasProps = {
   drawing: {
     tool: Tool;
     inputMode: InputMode;
+    color: string;
+    width: number;
     begin: (point: Point) => void;
     move: (point: Point) => void;
     end: (point: Point) => void;
@@ -225,7 +227,7 @@ export function DrawingCanvas({
     onEdit: onEditItem,
     onDelete: onDeleteItem,
   } = itemActions;
-  const { tool, inputMode, begin, move, end, cancel } = drawing;
+  const { tool, inputMode, color, width, begin, move, end, cancel } = drawing;
   const { canGoPrevious, onChange: onPageChange } = pages;
   const {
     viewport: { size, onLayout, pageStyle, getScale },
@@ -246,8 +248,9 @@ export function DrawingCanvas({
       imagePreview,
       backgroundGesture,
     },
+    livePen,
   } = useDrawingCanvas({
-    content: { items, onItemMove, onItemResize },
+    content: { items, strokes, draft, onItemMove, onItemResize },
     selection: {
       itemId: selectedItemId,
       strokeIds: selectedStrokeIds,
@@ -305,6 +308,15 @@ export function DrawingCanvas({
       <Animated.View pointerEvents="none" style={[styles.strokeLayer, pageStyle]}>
         <CommittedStrokeCanvas strokes={strokes} />
         <Canvas style={StyleSheet.absoluteFill}>
+          <Path
+            path={livePen.path}
+            color={color}
+            opacity={livePen.opacity}
+            style="stroke"
+            strokeWidth={width}
+            strokeCap="round"
+            strokeJoin="round"
+          />
           {draft && <StrokePath stroke={draft} />}
           {selectionPath && (
             <Path path={selectionPath} color="#3776b8" style="stroke" strokeWidth={1.5}>

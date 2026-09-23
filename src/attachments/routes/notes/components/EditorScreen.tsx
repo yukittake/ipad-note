@@ -286,6 +286,8 @@ export function EditorScreen() {
           drawing={{
             tool: editor.preferences.tool,
             inputMode: editor.preferences.inputMode,
+            color: editor.preferences.color,
+            width: editor.preferences.width,
             begin: editor.canvas.begin,
             move: editor.canvas.move,
             end: editor.canvas.end,
