@@ -26,13 +26,17 @@ import {
 } from '../constants';
 import { useEditorPreferences } from '../stores';
 import {
+  addStrokeToSpatialIndex,
   boundsOf,
+  buildStrokeSpatialIndex,
   eraseStrokePortion,
   insidePolygon,
   isNearlyStraight,
   newElementId,
+  removeStrokeFromSpatialIndex,
   strokeInsideSelection,
   strokeTouchesEraser,
+  strokesNearEraser,
   translateSelection,
   uniqueContent,
   uniqueElements,
@@ -73,6 +77,10 @@ export function useEditor(noteId: string) {
   } | null>(null);
   const straightenTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const strokesRef = useRef(strokes);
+  const strokeSpatialIndexRef = useRef(buildStrokeSpatialIndex(strokes));
+  const pendingEraserStrokesRef = useRef<Stroke[] | null>(null);
+  const pendingEraserCursorRef = useRef<Point | null>(null);
+  const eraserFrameRef = useRef<number | null>(null);
   const itemsRef = useRef(items);
   const draftRef = useRef(draft);
   const committedDraftIdRef = useRef<string | null>(null);
@@ -89,7 +97,6 @@ export function useEditor(noteId: string) {
     canRedo: false,
   });
   useEffect(() => {
-    strokesRef.current = strokes;
     const committedId = committedDraftIdRef.current;
     if (!committedId || !strokes.some((stroke) => stroke.id === committedId)) return;
     if (draftClearFrameRef.current !== null) cancelAnimationFrame(draftClearFrameRef.current);
@@ -131,6 +138,7 @@ export function useEditor(noteId: string) {
       mountedRef.current = false;
       clearStraightenTimer();
       if (draftClearFrameRef.current !== null) cancelAnimationFrame(draftClearFrameRef.current);
+      if (eraserFrameRef.current !== null) cancelAnimationFrame(eraserFrameRef.current);
       void flushPersistRef.current();
     },
     [],
@@ -171,6 +179,11 @@ export function useEditor(noteId: string) {
     setSelectionDraft(null);
     setSelectedIds([]);
     strokesRef.current = [];
+    strokeSpatialIndexRef.current = buildStrokeSpatialIndex([]);
+    pendingEraserStrokesRef.current = null;
+    pendingEraserCursorRef.current = null;
+    if (eraserFrameRef.current !== null) cancelAnimationFrame(eraserFrameRef.current);
+    eraserFrameRef.current = null;
     setStrokes([]);
     itemsRef.current = [];
     setItems([]);
@@ -181,6 +194,7 @@ export function useEditor(noteId: string) {
         if (value !== loaded) await savePageContent(noteId, pageId, value);
         if (active) {
           strokesRef.current = value.strokes;
+          strokeSpatialIndexRef.current = buildStrokeSpatialIndex(value.strokes);
           setStrokes(value.strokes);
           itemsRef.current = value.items;
           setItems(value.items);
@@ -262,12 +276,43 @@ export function useEditor(noteId: string) {
   }, []);
   useEffect(() => () => void flushPersistRef.current(), [pageId]);
 
+  const scheduleEraserRender = () => {
+    if (eraserFrameRef.current !== null) return;
+    eraserFrameRef.current = requestAnimationFrame(() => {
+      eraserFrameRef.current = null;
+      const nextStrokes = pendingEraserStrokesRef.current;
+      const nextCursor = pendingEraserCursorRef.current;
+      pendingEraserStrokesRef.current = null;
+      pendingEraserCursorRef.current = null;
+      if (nextStrokes) setStrokes(nextStrokes);
+      if (nextCursor) setEraserCursor(nextCursor);
+    });
+  };
+  const flushEraserRender = (cursor: Point | null) => {
+    if (eraserFrameRef.current !== null) cancelAnimationFrame(eraserFrameRef.current);
+    eraserFrameRef.current = null;
+    const nextStrokes = pendingEraserStrokesRef.current;
+    pendingEraserStrokesRef.current = null;
+    pendingEraserCursorRef.current = null;
+    if (nextStrokes) setStrokes(nextStrokes);
+    setEraserCursor(cursor);
+  };
+  const commitEraserChanges = (next: Stroke[], removed: Stroke[], added: Stroke[]) => {
+    const index = strokeSpatialIndexRef.current;
+    for (const stroke of removed) removeStrokeFromSpatialIndex(index, stroke);
+    for (const stroke of added) addStrokeToSpatialIndex(index, stroke);
+    strokesRef.current = next;
+    pendingEraserStrokesRef.current = next;
+    scheduleEraserRender();
+  };
+
   const commit = (next: Stroke[], recordChange = true, saveChange = true) => {
     if (next === strokesRef.current) return;
     next = uniqueElements(next);
     if (recordChange) record(strokesRef.current, next);
     setStrokes(next);
     strokesRef.current = next;
+    strokeSpatialIndexRef.current = buildStrokeSpatialIndex(next);
     if (page && saveChange) persist(page.id, { strokes: next, items: itemsRef.current });
   };
   const commitItems = (next: PageItem[]) => {
@@ -348,12 +393,30 @@ export function useEditor(noteId: string) {
 
   const erase = (from: Point, to: Point) => {
     const current = strokesRef.current;
-    const next =
-      eraserMode === 'stroke'
-        ? current.filter((stroke) => !strokeTouchesEraser(stroke, from, to))
-        : current.flatMap((stroke) => eraseStrokePortion(stroke, from, to));
-    if (next.length !== current.length || next.some((stroke, index) => stroke !== current[index]))
-      commit(next, false, false);
+    const candidates = strokesNearEraser(strokeSpatialIndexRef.current, from, to);
+    if (!candidates.size) return;
+    const changes: { index: number; original: Stroke; replacements: Stroke[] }[] = [];
+    for (const stroke of candidates) {
+      const index = current.indexOf(stroke);
+      if (index < 0) continue;
+      if (eraserMode === 'stroke') {
+        if (strokeTouchesEraser(stroke, from, to))
+          changes.push({ index, original: stroke, replacements: [] });
+      } else {
+        const replacements = eraseStrokePortion(stroke, from, to);
+        if (replacements.length !== 1 || replacements[0] !== stroke)
+          changes.push({ index, original: stroke, replacements });
+      }
+    }
+    if (!changes.length) return;
+    const next = current.slice();
+    changes.sort((left, right) => right.index - left.index);
+    for (const change of changes) next.splice(change.index, 1, ...change.replacements);
+    commitEraserChanges(
+      next,
+      changes.map((change) => change.original),
+      changes.flatMap((change) => change.replacements),
+    );
   };
 
   const move = (point: Point) => {
@@ -373,7 +436,8 @@ export function useEditor(noteId: string) {
         if (!current.straightened) scheduleStraighten();
       }
     } else if (current.mode === 'erase') {
-      setEraserCursor(point);
+      pendingEraserCursorRef.current = point;
+      scheduleEraserRender();
       erase(current.start, point);
       current.start = point;
     } else if (current.mode === 'select') {
@@ -403,7 +467,6 @@ export function useEditor(noteId: string) {
   const end = (point: Point) => {
     const current = gesture.current;
     if (!current) return;
-    setEraserCursor(null);
     clearStraightenTimer();
     if (current.mode === 'draw' && draftRef.current) {
       const stroke = draftRef.current;
@@ -420,11 +483,13 @@ export function useEditor(noteId: string) {
       ]);
     } else if (current.mode === 'erase') {
       erase(current.start, point);
+      flushEraserRender(null);
       if (current.originals && current.originals !== strokesRef.current) {
         record(current.originals, strokesRef.current);
         if (page) persist(page.id, { strokes: strokesRef.current, items: itemsRef.current });
       }
     } else if (current.mode === 'select') {
+      setEraserCursor(null);
       const points = [...(current.selectionPoints ?? [current.start]), point];
       const bounds = boundsOf(points);
       const ids = strokesRef.current
@@ -434,6 +499,7 @@ export function useEditor(noteId: string) {
       setSelection(ids.length ? { id: newElementId(), points, bounds } : null);
       setSelectionDraft(null);
     } else if (current.mode === 'move' && current.originals) {
+      setEraserCursor(null);
       const dx = point.x - current.start.x,
         dy = point.y - current.start.y;
       if (Math.abs(dx) + Math.abs(dy) >= 0.5) {
@@ -459,18 +525,27 @@ export function useEditor(noteId: string) {
   const cancel = () => {
     const current = gesture.current;
     if (!current) return;
-    setEraserCursor(null);
     clearStraightenTimer();
     if (current.mode === 'draw') {
+      setEraserCursor(null);
       draftRef.current = null;
       setDraft(null);
     } else if (current.mode === 'move' && current.originals) {
+      setEraserCursor(null);
       strokesRef.current = current.originals;
       setStrokes(current.originals);
       if (current.selectionStart) setSelection(current.selectionStart);
     } else if (current.mode === 'erase' && current.originals) {
-      commit(current.originals, false, false);
+      if (eraserFrameRef.current !== null) cancelAnimationFrame(eraserFrameRef.current);
+      eraserFrameRef.current = null;
+      pendingEraserStrokesRef.current = null;
+      pendingEraserCursorRef.current = null;
+      strokesRef.current = current.originals;
+      strokeSpatialIndexRef.current = buildStrokeSpatialIndex(current.originals);
+      setStrokes(current.originals);
+      setEraserCursor(null);
     } else if (current.mode === 'select') {
+      setEraserCursor(null);
       setSelectionDraft(null);
     }
     gesture.current = null;
@@ -527,6 +602,7 @@ export function useEditor(noteId: string) {
     setSelection(null);
     setSelectedIds([]);
     strokesRef.current = previous.strokes;
+    strokeSpatialIndexRef.current = buildStrokeSpatialIndex(previous.strokes);
     itemsRef.current = previous.items;
     setStrokes(previous.strokes);
     setItems(previous.items);
@@ -542,6 +618,7 @@ export function useEditor(noteId: string) {
     setSelection(null);
     setSelectedIds([]);
     strokesRef.current = next.strokes;
+    strokeSpatialIndexRef.current = buildStrokeSpatialIndex(next.strokes);
     itemsRef.current = next.items;
     setStrokes(next.strokes);
     setItems(next.items);

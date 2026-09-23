@@ -103,6 +103,95 @@ function pointToSegmentDistanceSquared(point: Point, start: Point, end: Point) {
   return x * x + y * y;
 }
 
+export type StrokeBounds = { minX: number; minY: number; maxX: number; maxY: number };
+export type StrokeSpatialIndex = {
+  cellSize: number;
+  cells: Map<string, Set<Stroke>>;
+  strokeCells: WeakMap<Stroke, string[]>;
+};
+
+const strokeBoundsCache = new WeakMap<Stroke, StrokeBounds>();
+
+export function strokeBounds(stroke: Stroke): StrokeBounds | null {
+  const cached = strokeBoundsCache.get(stroke);
+  if (cached) return cached;
+  const first = stroke.points[0];
+  if (!first) return null;
+  const bounds = { minX: first.x, minY: first.y, maxX: first.x, maxY: first.y };
+  for (let index = 1; index < stroke.points.length; index++) {
+    const point = stroke.points[index];
+    bounds.minX = Math.min(bounds.minX, point.x);
+    bounds.minY = Math.min(bounds.minY, point.y);
+    bounds.maxX = Math.max(bounds.maxX, point.x);
+    bounds.maxY = Math.max(bounds.maxY, point.y);
+  }
+  strokeBoundsCache.set(stroke, bounds);
+  return bounds;
+}
+
+const gridCellKey = (x: number, y: number) => `${x}:${y}`;
+
+function gridCellsForBounds(bounds: StrokeBounds, cellSize: number) {
+  const keys: string[] = [];
+  const firstX = Math.floor(bounds.minX / cellSize);
+  const lastX = Math.floor(bounds.maxX / cellSize);
+  const firstY = Math.floor(bounds.minY / cellSize);
+  const lastY = Math.floor(bounds.maxY / cellSize);
+  for (let y = firstY; y <= lastY; y++)
+    for (let x = firstX; x <= lastX; x++) keys.push(gridCellKey(x, y));
+  return keys;
+}
+
+export function buildStrokeSpatialIndex(strokes: Stroke[], cellSize = 96): StrokeSpatialIndex {
+  const index: StrokeSpatialIndex = { cellSize, cells: new Map(), strokeCells: new WeakMap() };
+  for (const stroke of strokes) addStrokeToSpatialIndex(index, stroke);
+  return index;
+}
+
+export function addStrokeToSpatialIndex(index: StrokeSpatialIndex, stroke: Stroke) {
+  const bounds = strokeBounds(stroke);
+  if (!bounds) return;
+  const padding = stroke.width / 2;
+  const keys = gridCellsForBounds(
+    {
+      minX: bounds.minX - padding,
+      minY: bounds.minY - padding,
+      maxX: bounds.maxX + padding,
+      maxY: bounds.maxY + padding,
+    },
+    index.cellSize,
+  );
+  index.strokeCells.set(stroke, keys);
+  for (const key of keys) {
+    const cell = index.cells.get(key) ?? new Set<Stroke>();
+    cell.add(stroke);
+    index.cells.set(key, cell);
+  }
+}
+
+export function removeStrokeFromSpatialIndex(index: StrokeSpatialIndex, stroke: Stroke) {
+  for (const key of index.strokeCells.get(stroke) ?? []) {
+    const cell = index.cells.get(key);
+    if (!cell) continue;
+    cell.delete(stroke);
+    if (!cell.size) index.cells.delete(key);
+  }
+  index.strokeCells.delete(stroke);
+}
+
+export function strokesNearEraser(index: StrokeSpatialIndex, from: Point, to: Point): Set<Stroke> {
+  const area = {
+    minX: Math.min(from.x, to.x) - ERASER_RADIUS,
+    minY: Math.min(from.y, to.y) - ERASER_RADIUS,
+    maxX: Math.max(from.x, to.x) + ERASER_RADIUS,
+    maxY: Math.max(from.y, to.y) + ERASER_RADIUS,
+  };
+  const candidates = new Set<Stroke>();
+  for (const key of gridCellsForBounds(area, index.cellSize))
+    for (const stroke of index.cells.get(key) ?? []) candidates.add(stroke);
+  return candidates;
+}
+
 type Segment = { from: Point; to: Point };
 
 export function segmentsIntersect({ from: a, to: b }: Segment, { from: c, to: d }: Segment) {
@@ -123,7 +212,17 @@ export function segmentsIntersect({ from: a, to: b }: Segment, { from: c, to: d 
 }
 
 export function strokeTouchesEraser(stroke: Stroke, from: Point, to: Point) {
-  const radiusSquared = Math.pow(ERASER_RADIUS + stroke.width / 2, 2);
+  const radius = ERASER_RADIUS + stroke.width / 2;
+  const bounds = strokeBounds(stroke);
+  if (
+    !bounds ||
+    bounds.maxX < Math.min(from.x, to.x) - radius ||
+    bounds.minX > Math.max(from.x, to.x) + radius ||
+    bounds.maxY < Math.min(from.y, to.y) - radius ||
+    bounds.minY > Math.max(from.y, to.y) + radius
+  )
+    return false;
+  const radiusSquared = radius ** 2;
   const points = stroke.points;
   for (let index = 0; index < points.length; index++) {
     const start = points[index],
