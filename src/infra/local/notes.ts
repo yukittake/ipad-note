@@ -510,6 +510,66 @@ export async function deletePage(noteId: string, pageId: string): Promise<Page[]
   return listPages(noteId);
 }
 
+export async function restoreDeletedPage(
+  noteId: string,
+  page: Page,
+  content: PageContent,
+  replacementPageId?: string,
+): Promise<Page[]> {
+  const note = await getNote(noteId);
+  if (!note) throw new Error('ノートが見つかりません');
+  const db = await dbPromise;
+  if (note.external_uri) {
+    const restored = await mutateExternal(note, (portable) => {
+      if (portable.pages.some((candidate) => candidate.id === page.id))
+        throw new Error('ページはすでに復元されています');
+      if (replacementPageId)
+        portable.pages = portable.pages.filter((candidate) => candidate.id !== replacementPageId);
+      portable.pages.push({ ...page, content });
+      portable.pages.sort((left, right) => left.position - right.position);
+      return portable.pages.map(({ content: _content, ...candidate }) => candidate);
+    });
+    await db.withExclusiveTransactionAsync(async (txn) => {
+      if (replacementPageId)
+        await txn.runAsync(
+          'DELETE FROM pages WHERE id = ? AND note_id = ?',
+          replacementPageId,
+          noteId,
+        );
+      await txn.runAsync(
+        'INSERT INTO pages (id, note_id, position) VALUES (?, ?, ?)',
+        page.id,
+        noteId,
+        page.position,
+      );
+      await txn.runAsync('UPDATE notes SET updated_at = ? WHERE id = ?', Date.now(), noteId);
+    });
+    return restored;
+  }
+  if (!drawings.exists) drawings.create();
+  drawingFile(page.id).write(JSON.stringify(content));
+  await db.withExclusiveTransactionAsync(async (txn) => {
+    if (replacementPageId)
+      await txn.runAsync(
+        'DELETE FROM pages WHERE id = ? AND note_id = ?',
+        replacementPageId,
+        noteId,
+      );
+    await txn.runAsync(
+      'INSERT INTO pages (id, note_id, position) VALUES (?, ?, ?)',
+      page.id,
+      noteId,
+      page.position,
+    );
+    await txn.runAsync('UPDATE notes SET updated_at = ? WHERE id = ?', Date.now(), noteId);
+  });
+  if (replacementPageId) {
+    const replacement = drawingFile(replacementPageId);
+    if (replacement.exists) replacement.delete();
+  }
+  return listPages(noteId);
+}
+
 async function readLocalContent(pageId: string): Promise<PageContent> {
   const file = drawingFile(pageId);
   if (!file.exists) return emptyContent();

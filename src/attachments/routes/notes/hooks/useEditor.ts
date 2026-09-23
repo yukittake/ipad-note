@@ -15,6 +15,7 @@ import {
   type Point,
   reloadExternalNote,
   renameNote,
+  restoreDeletedPage,
   savePageContent,
   type Stroke,
 } from '@/infra/local/notes';
@@ -46,6 +47,13 @@ import type { Box, Selection, Tool } from './types';
 type StrokeClipboard = { strokes: Stroke[]; outline: Point[]; bounds: Box };
 type SaveStatus = 'saved' | 'saving' | 'error';
 type PendingSave = { pageId: string; content: PageContent };
+type DeletedPageUndo = {
+  page: Page;
+  content: PageContent;
+  index: number;
+  replacementPageId?: string;
+  history?: { past: PageContent[]; future: PageContent[] };
+};
 
 export function useEditor(noteId: string) {
   const [note, setNote] = useState<Note | null>(null);
@@ -90,6 +98,8 @@ export function useEditor(noteId: string) {
   const draftClearFrameRef = useRef<number | null>(null);
   const changingPages = useRef(false);
   const historyRef = useRef<Record<string, { past: PageContent[]; future: PageContent[] }>>({});
+  const deletedPageUndoRef = useRef<DeletedPageUndo | null>(null);
+  const deletedPageRedoRef = useRef<DeletedPageUndo | null>(null);
   const pendingSaveRef = useRef<PendingSave | null>(null);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const saveChainRef = useRef<Promise<void>>(Promise.resolve());
@@ -236,8 +246,8 @@ export function useEditor(noteId: string) {
           setStorageError('');
           const history = historyRef.current[pageId];
           setHistoryAvailability({
-            canUndo: !!history?.past.length,
-            canRedo: !!history?.future.length,
+            canUndo: !!deletedPageUndoRef.current || !!history?.past.length,
+            canRedo: !!deletedPageRedoRef.current || !!history?.future.length,
           });
         }
       })().catch((error) => {
@@ -251,6 +261,8 @@ export function useEditor(noteId: string) {
   const historyFor = (pageId: string) => (historyRef.current[pageId] ??= { past: [], future: [] });
   const recordContent = (before: PageContent, after: PageContent) => {
     if (!page || (before.strokes === after.strokes && before.items === after.items)) return;
+    deletedPageUndoRef.current = null;
+    deletedPageRedoRef.current = null;
     const history = historyFor(page.id);
     history.past.push(before);
     if (history.past.length > 50) history.past.shift();
@@ -628,11 +640,40 @@ export function useEditor(noteId: string) {
       bounds: { ...clipboard.bounds, x: clipboard.bounds.x + dx, y: clipboard.bounds.y + dy },
     });
   };
-  const undo = () => {
+  const undo = async () => {
+    const deleted = deletedPageUndoRef.current;
+    if (deleted && !changingPages.current) {
+      changingPages.current = true;
+      try {
+        await flushPersist();
+        const restored = await restoreDeletedPage(
+          noteId,
+          deleted.page,
+          deleted.content,
+          deleted.replacementPageId,
+        );
+        deletedPageUndoRef.current = null;
+        deletedPageRedoRef.current = deleted;
+        if (deleted.history) historyRef.current[deleted.page.id] = deleted.history;
+        setPages(restored);
+        setPageIndex(Math.min(deleted.index, restored.length - 1));
+        setHistoryAvailability({
+          canUndo: !!deleted.history?.past.length,
+          canRedo: true,
+        });
+        setAccessError('');
+      } catch (error) {
+        setAccessError(`ページを復元できませんでした: ${String(error)}`);
+      } finally {
+        changingPages.current = false;
+      }
+      return;
+    }
     if (!page || loadedPageId !== page.id) return;
     const history = historyFor(page.id);
     const previous = history.past.pop();
     if (!previous) return;
+    deletedPageRedoRef.current = null;
     history.future.push({ strokes: strokesRef.current, items: itemsRef.current });
     setHistoryAvailability({ canUndo: !!history.past.length, canRedo: true });
     setSelection(null);
@@ -644,7 +685,29 @@ export function useEditor(noteId: string) {
     setItems(previous.items);
     persist(page.id, previous);
   };
-  const redo = () => {
+  const redo = async () => {
+    const deleted = deletedPageRedoRef.current;
+    if (deleted && !changingPages.current) {
+      changingPages.current = true;
+      try {
+        await flushPersist();
+        const remaining = await deletePage(noteId, deleted.page.id);
+        const nextUndo = { ...deleted };
+        nextUndo.replacementPageId = pages.length === 1 ? remaining[0]?.id : undefined;
+        deletedPageRedoRef.current = null;
+        deletedPageUndoRef.current = nextUndo;
+        delete historyRef.current[deleted.page.id];
+        setPages(remaining);
+        setPageIndex(Math.min(deleted.index, remaining.length - 1));
+        setHistoryAvailability({ canUndo: true, canRedo: false });
+        setAccessError('');
+      } catch (error) {
+        setAccessError(`ページを再削除できませんでした: ${String(error)}`);
+      } finally {
+        changingPages.current = false;
+      }
+      return;
+    }
     if (!page || loadedPageId !== page.id) return;
     const history = historyFor(page.id);
     const next = history.future.pop();
@@ -664,6 +727,8 @@ export function useEditor(noteId: string) {
     if (changingPages.current || loadedPageId !== page?.id) return;
     changingPages.current = true;
     try {
+      deletedPageUndoRef.current = null;
+      deletedPageRedoRef.current = null;
       await flushPersist();
       const next = await addPage(noteId);
       setPages((current) => [...current, next]);
@@ -677,10 +742,20 @@ export function useEditor(noteId: string) {
     changingPages.current = true;
     try {
       await flushPersist();
+      const deleted: DeletedPageUndo = {
+        page,
+        content: { strokes: strokesRef.current, items: itemsRef.current },
+        index: pageIndex,
+        history: historyRef.current[page.id],
+      };
       const remaining = await deletePage(noteId, page.id);
+      if (pages.length === 1) deleted.replacementPageId = remaining[0]?.id;
+      deletedPageUndoRef.current = deleted;
+      deletedPageRedoRef.current = null;
       delete historyRef.current[page.id];
       setPages(remaining);
       setPageIndex(Math.min(pageIndex, remaining.length - 1));
+      setHistoryAvailability({ canUndo: true, canRedo: false });
     } finally {
       changingPages.current = false;
     }
